@@ -153,12 +153,15 @@ def _schedule_day(date=None):
 
         start_dt = datetime(target.year, target.month, target.day, hour_from, 0, tzinfo=MSK)
         end_dt = datetime(target.year, target.month, target.day, hour_to, 0, tzinfo=MSK)
-        delta = int((end_dt - start_dt).total_seconds())
-        fire_time = start_dt + timedelta(seconds=random.randint(0, delta - 1))
 
-        if fire_time <= now:
+        if end_dt <= now:
             log.info("Пропускаю прошедший слот [%s %s]", target, slot_name)
             continue
+
+        # Если стартуем внутри окна — берём время от текущего момента до конца окна
+        earliest = max(start_dt, now + timedelta(seconds=30))
+        delta = int((end_dt - earliest).total_seconds())
+        fire_time = earliest + timedelta(seconds=random.randint(0, max(delta - 1, 0)))
 
         scheduler.add_job(
             send_motivation,
