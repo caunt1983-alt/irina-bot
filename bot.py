@@ -1,7 +1,8 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from dotenv import load_dotenv
 import os
 
@@ -23,13 +25,32 @@ MSK = ZoneInfo("Europe/Moscow")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-SEND_HOURS = [8, 10, 12, 14, 16, 18, 20]
+# (название, час_от, час_до)
+WINDOWS = [
+    ("morning",   6,  8),
+    ("afternoon", 12, 14),
+    ("evening",   20, 22),
+]
+
+TIME_HINTS = {
+    "morning": (
+        "первое утреннее — ОБЯЗАТЕЛЬНО начни с приветствия, каждый раз разного: "
+        "Доброе утро! / С добрым утром! / Утро доброе! / Просыпайся, красавица! / "
+        "Новый день уже ждёт! / Солнце встало — и ты вставай! и т.п. Бодрое, про хороший старт дня"
+    ),
+    "afternoon": "дневное — про середину дня, маленькие победы, перерыв и заботу о себе",
+    "evening": (
+        "последнее вечернее — про отдых и тепло, ОБЯЗАТЕЛЬНО заверши прощанием, каждый раз разным: "
+        "Спокойной ночи! / До завтра! / Сладких снов! / Отдыхай, ты это заслужила! / "
+        "Пусть ночь будет доброй! / Засыпай с улыбкой! и т.п."
+    ),
+}
 
 SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"
 
 SYSTEM_PROMPT = """Ты — добрый и остроумный бот, который отправляет мотивирующие сообщения.
 
-Твоя задача: написать одно короткое мотивирующее сообщение (2–4 предложения) на одну из тем:
+Твоя задача: написать одно мотивирующее сообщение (3–5 предложений) на одну из тем:
 - женственность и красота
 - любовь к себе и самоценность
 - здоровье и забота о себе
@@ -48,9 +69,9 @@ SYSTEM_PROMPT = """Ты — добрый и остроумный бот, кот�
 6. Пиши только само сообщение, без вступлений и пояснений.
 
 Примеры хорошего тона:
-- "Ты сегодня снова в главной роли. Весь мир — твоя сцена. 🌸"
-- "Женщина, которая умеет смеяться над собой, — непобедима. И обаятельна до безобразия. 😄"
-- "Здоровье — не наказание, а подарок. Прими с благодарностью и выпей стакан воды. 💧"
+- "Доброе утро! ☀️ Ты сегодня снова в главной роли. Весь мир — твоя сцена. 🌸"
+- "Женщина, которая умеет смеяться над собой, — непобедима 😄 И обаятельна до безобразия."
+- "Здоровье — не наказание, а подарок 💎 Прими с благодарностью и выпей стакан воды. 💧"
 """
 
 anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -74,20 +95,8 @@ def save_subscribers(subs: set[int]) -> None:
 subscribers: set[int] = load_subscribers()
 
 
-async def generate_message() -> str:
-    now = datetime.now(tz=MSK)
-    hour = now.hour
-    time_hint = {
-        8:  "первое утреннее — ОБЯЗАТЕЛЬНО начни с приветствия, каждый раз разного: Доброе утро! / С добрым утром! / Утро доброе! / Просыпайся, красавица! / Новый день уже ждёт! / Солнце встало — и ты вставай! и т.п. Бодрое, про хороший старт дня",
-        10: "утреннее — про кофе, энергию, планы",
-        12: "дневное — про середину дня, маленькие победы",
-        14: "дневное — про обед, перерыв, заботу о себе",
-        16: "послеобеденное — про второй ветер, настроение",
-        18: "вечернее — про итоги дня, гордость собой",
-        20: "последнее вечернее — про отдых и тепло, ОБЯЗАТЕЛЬНО заверши прощанием, каждый раз разным: Спокойной ночи! / До завтра! / Сладких снов! / Отдыхай, ты это заслужила! / Пусть ночь будет доброй! / Засыпай с улыбкой! и т.п.",
-    }
-    hint = time_hint.get(hour, "мотивирующее")
-
+async def generate_message(slot: str = "afternoon") -> str:
+    hint = TIME_HINTS.get(slot, "мотивирующее")
     response = await anthropic_client.messages.create(
         model="claude-haiku-4-5",
         max_tokens=400,
@@ -108,21 +117,20 @@ async def generate_message() -> str:
     return response.content[0].text.strip()
 
 
-async def send_motivation(hour: int | None = None) -> None:
+async def send_motivation(slot: str = "afternoon") -> None:
     if not subscribers:
         return
 
     now = datetime.now(tz=MSK)
-    h = hour if hour is not None else now.hour
-    slot_key = f"{now.strftime('%Y-%m-%d')}_{h:02d}"
+    slot_key = f"{now.strftime('%Y-%m-%d')}_{slot}"
 
     if slot_key in _sent_slots:
         return
 
     try:
-        text = await generate_message()
+        text = await generate_message(slot)
     except Exception as e:
-        log.error("Ошибка генерации сообщения: %s", e)
+        log.error("Ошибка генерации [%s]: %s", slot, e)
         return
 
     for chat_id in list(subscribers):
@@ -132,14 +140,42 @@ async def send_motivation(hour: int | None = None) -> None:
             log.warning("Не удалось отправить %s: %s", chat_id, e)
 
     _sent_slots.add(slot_key)
-    log.info("Отправлено [%s] %d подписчикам: %s", slot_key, len(subscribers), text[:60])
+    log.info("Отправлено [%s]: %s", slot_key, text[:60])
 
 
-async def _check_missed() -> None:
+def _schedule_day(date=None):
+    """Планирует 3 случайных сообщения на указанный день."""
     now = datetime.now(tz=MSK)
-    if now.hour in SEND_HOURS and now.minute < 30:
-        log.info("Догоняю пропущенный слот %d:00", now.hour)
-        await send_motivation(now.hour)
+    target = date or now.date()
+
+    for slot_name, hour_from, hour_to in WINDOWS:
+        job_id = f"motivation_{target}_{slot_name}"
+
+        start_dt = datetime(target.year, target.month, target.day, hour_from, 0, tzinfo=MSK)
+        end_dt = datetime(target.year, target.month, target.day, hour_to, 0, tzinfo=MSK)
+        delta = int((end_dt - start_dt).total_seconds())
+        fire_time = start_dt + timedelta(seconds=random.randint(0, delta - 1))
+
+        if fire_time <= now:
+            log.info("Пропускаю прошедший слот [%s %s]", target, slot_name)
+            continue
+
+        scheduler.add_job(
+            send_motivation,
+            DateTrigger(run_date=fire_time),
+            kwargs={"slot": slot_name},
+            id=job_id,
+            replace_existing=True,
+        )
+        log.info("Запланировано [%s] на %s МСК", slot_name, fire_time.strftime("%H:%M"))
+
+
+async def _reschedule_tomorrow():
+    """Каждую ночь в 00:01 планирует сообщения на следующий день."""
+    now = datetime.now(tz=MSK)
+    tomorrow = (now + timedelta(days=1)).date()
+    _schedule_day(tomorrow)
+    log.info("Расписание на %s создано", tomorrow)
 
 
 @dp.message(Command("start"))
@@ -147,14 +183,17 @@ async def cmd_start(message: Message) -> None:
     subscribers.add(message.chat.id)
     save_subscribers(subscribers)
     await message.answer(
-        "Привет! 🌸 Теперь ты будешь получать мотивирующие сообщения каждые 2 часа с 8:00 до 20:00 МСК.\n\n"
+        "Привет! 🌸 Теперь ты будешь получать мотивирующие сообщения 3 раза в день:\n"
+        "☀️ Утром (6:00–8:00)\n"
+        "🌤 Днём (12:00–14:00)\n"
+        "🌙 Вечером (20:00–22:00)\n\n"
         "Чтобы отписаться — /stop"
     )
     try:
-        text = await generate_message()
+        text = await generate_message("morning")
         await message.answer(text)
     except Exception as e:
-        log.error("Ошибка генерации приветственного сообщения: %s", e)
+        log.error("Ошибка приветственного сообщения: %s", e)
     log.info("Новый подписчик: %s", message.chat.id)
 
 
@@ -169,7 +208,7 @@ async def cmd_stop(message: Message) -> None:
 @dp.message(Command("test"))
 async def cmd_test(message: Message) -> None:
     try:
-        text = await generate_message()
+        text = await generate_message("afternoon")
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
         return
@@ -179,27 +218,31 @@ async def cmd_test(message: Message) -> None:
 @dp.message(Command("next"))
 async def cmd_next(message: Message) -> None:
     now = datetime.now(tz=MSK)
-    upcoming = [h for h in SEND_HOURS if h > now.hour]
+    jobs = sorted(
+        [j for j in scheduler.get_jobs() if j.id.startswith("motivation_")],
+        key=lambda j: j.next_run_time,
+    )
+    upcoming = [j for j in jobs if j.next_run_time and j.next_run_time > now]
     if upcoming:
-        await message.answer(f"Следующее сообщение в {upcoming[0]}:00 МСК.")
+        t = upcoming[0].next_run_time.astimezone(MSK)
+        await message.answer(f"Следующее сообщение в {t.strftime('%H:%M')} МСК.")
     else:
-        await message.answer("На сегодня все сообщения отправлены. Завтра в 8:00 МСК.")
+        await message.answer("На сегодня все сообщения отправлены. Ждём завтра! 🌙")
 
 
 async def main() -> None:
-    for hour in SEND_HOURS:
-        scheduler.add_job(
-            send_motivation,
-            CronTrigger(hour=hour, minute=0, timezone=MSK),
-            kwargs={"hour": hour},
-            misfire_grace_time=3600,
-            coalesce=True,
-            id=f"motivation_{hour:02d}",
-        )
+    # Планируем сообщения на сегодня
+    _schedule_day()
+
+    # Каждую ночь в 00:01 планируем следующий день
+    scheduler.add_job(
+        _reschedule_tomorrow,
+        CronTrigger(hour=0, minute=1, timezone=MSK),
+        id="reschedule_daily",
+    )
 
     scheduler.start()
-    log.info("Планировщик запущен. Часы отправки: %s МСК", SEND_HOURS)
-    await _check_missed()
+    log.info("Планировщик запущен")
     await dp.start_polling(bot, skip_updates=True)
 
 
