@@ -150,6 +150,11 @@ async def cmd_start(message: Message) -> None:
         "Привет! 🌸 Теперь ты будешь получать мотивирующие сообщения каждые 2 часа с 8:00 до 20:00 МСК.\n\n"
         "Чтобы отписаться — /stop"
     )
+    try:
+        text = await generate_message()
+        await message.answer(text)
+    except Exception as e:
+        log.error("Ошибка генерации приветственного сообщения: %s", e)
     log.info("Новый подписчик: %s", message.chat.id)
 
 
