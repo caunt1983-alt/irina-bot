@@ -46,7 +46,8 @@ TIME_HINTS = {
     ),
 }
 
-SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+SUBSCRIBERS_FILE = DATA_DIR / "subscribers.json"
 
 SYSTEM_PROMPT = """Ты — добрый и остроумный бот, который отправляет мотивирующие сообщения.
 
@@ -89,6 +90,7 @@ def load_subscribers() -> set[int]:
 
 
 def save_subscribers(subs: set[int]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     SUBSCRIBERS_FILE.write_text(json.dumps(list(subs)), encoding="utf-8")
 
 
