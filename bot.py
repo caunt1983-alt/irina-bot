@@ -80,7 +80,25 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone=MSK)
 
-_sent_slots: set[str] = set()
+SENT_SLOTS_FILE = DATA_DIR / "sent_slots.json"
+
+
+def load_sent_slots() -> set[str]:
+    if SENT_SLOTS_FILE.exists():
+        today = datetime.now(tz=MSK).strftime("%Y-%m-%d")
+        data = json.loads(SENT_SLOTS_FILE.read_text(encoding="utf-8"))
+        return {s for s in data if s.startswith(today)}
+    return set()
+
+
+def save_sent_slot(slot_key: str) -> None:
+    slots = load_sent_slots()
+    slots.add(slot_key)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SENT_SLOTS_FILE.write_text(json.dumps(list(slots)), encoding="utf-8")
+
+
+_sent_slots: set[str] = load_sent_slots()
 
 
 def load_subscribers() -> set[int]:
@@ -142,6 +160,7 @@ async def send_motivation(slot: str = "afternoon") -> None:
             log.warning("Не удалось отправить %s: %s", chat_id, e)
 
     _sent_slots.add(slot_key)
+    save_sent_slot(slot_key)
     log.info("Отправлено [%s]: %s", slot_key, text[:60])
 
 
@@ -152,6 +171,10 @@ def _schedule_day(date=None):
 
     for slot_name, hour_from, hour_to in WINDOWS:
         job_id = f"motivation_{target}_{slot_name}"
+
+        if f"{target}_{slot_name}" in _sent_slots:
+            log.info("Слот [%s %s] уже отправлен, пропускаю", target, slot_name)
+            continue
 
         start_dt = datetime(target.year, target.month, target.day, hour_from, 0, tzinfo=MSK)
         end_dt = datetime(target.year, target.month, target.day, hour_to, 0, tzinfo=MSK)
@@ -173,6 +196,20 @@ def _schedule_day(date=None):
             replace_existing=True,
         )
         log.info("Запланировано [%s] на %s МСК", slot_name, fire_time.strftime("%H:%M"))
+
+
+async def _catch_up_today() -> None:
+    """При старте отправляет пропущенные слоты текущего дня."""
+    now = datetime.now(tz=MSK)
+    today = now.date()
+    for slot_name, hour_from, _ in WINDOWS:
+        slot_key = f"{today}_{slot_name}"
+        if slot_key in _sent_slots:
+            continue
+        start_dt = datetime(today.year, today.month, today.day, hour_from, 0, tzinfo=MSK)
+        if now >= start_dt:
+            log.info("Догоняю пропущенный слот [%s]", slot_key)
+            await send_motivation(slot_name)
 
 
 async def _reschedule_tomorrow():
@@ -248,6 +285,7 @@ async def main() -> None:
 
     scheduler.start()
     log.info("Планировщик запущен")
+    await _catch_up_today()
     await dp.start_polling(bot, skip_updates=True)
 
 
