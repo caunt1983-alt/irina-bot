@@ -26,11 +26,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 # (название, час_от, час_до)
+# Случайное время внутри окна
 WINDOWS = [
-    ("morning",   6,  8),
     ("afternoon", 12, 14),
     ("evening",   20, 22),
 ]
+
+# Час начала каждого слота (для догонялки)
+SLOT_START_HOUR = {
+    "morning":   6,
+    "afternoon": 12,
+    "evening":   20,
+}
 
 TIME_HINTS = {
     "morning": (
@@ -202,11 +209,11 @@ async def _catch_up_today() -> None:
     """При старте отправляет пропущенные слоты текущего дня."""
     now = datetime.now(tz=MSK)
     today = now.date()
-    for slot_name, hour_from, _ in WINDOWS:
+    for slot_name, start_hour in SLOT_START_HOUR.items():
         slot_key = f"{today}_{slot_name}"
         if slot_key in _sent_slots:
             continue
-        start_dt = datetime(today.year, today.month, today.day, hour_from, 0, tzinfo=MSK)
+        start_dt = datetime(today.year, today.month, today.day, start_hour, 0, tzinfo=MSK)
         if now >= start_dt:
             log.info("Догоняю пропущенный слот [%s]", slot_key)
             await send_motivation(slot_name)
@@ -273,10 +280,20 @@ async def cmd_next(message: Message) -> None:
 
 
 async def main() -> None:
-    # Планируем сообщения на сегодня
+    # Утро — фиксированный CronTrigger, переживает рестарты
+    scheduler.add_job(
+        send_motivation,
+        CronTrigger(hour=6, minute=0, timezone=MSK),
+        kwargs={"slot": "morning"},
+        id="motivation_morning",
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+
+    # Обед и вечер — случайное время внутри окна
     _schedule_day()
 
-    # Каждую ночь в 00:01 планируем следующий день
+    # Каждую ночь в 00:01 планируем следующий день (обед + вечер)
     scheduler.add_job(
         _reschedule_tomorrow,
         CronTrigger(hour=0, minute=1, timezone=MSK),
@@ -284,7 +301,7 @@ async def main() -> None:
     )
 
     scheduler.start()
-    log.info("Планировщик запущен")
+    log.info("Планировщик запущен. Утро: 6:00 МСК фиксировано")
     await _catch_up_today()
     await dp.start_polling(bot, skip_updates=True)
 
